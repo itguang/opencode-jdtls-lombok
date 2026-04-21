@@ -54,6 +54,12 @@ curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/
 powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.ps1 | iex"
 ```
 
+**如果你已经在 PowerShell 会话中**，也可以直接执行：
+
+```powershell
+irm https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.ps1 | iex
+```
+
 **本地文件执行**：
 
 ```powershell
