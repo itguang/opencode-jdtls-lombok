@@ -18,20 +18,40 @@ set -uo pipefail
 printf '\n\033[1;36m[opencode-jdtls-lombok] 脚本启动中...\033[0m\n'
 
 # ---------- 修复管道执行 (curl ... | bash) 时 stdin 被占用导致 read 取不到输入 ----------
-# 必须在 set -e 之前完成 stdin 重接,否则 exec 失败会直接静默退出。
+#
+# 关键背景: bash 通过管道执行脚本时,是边读 stdin 边执行的(streaming),不是一次性
+# 读完。如果脚本中途执行 `exec </dev/tty` 切换 stdin,bash 后续将无法继续读取
+# 脚本本身——直接卡死或报错。
+#
+# 解法: 检测到管道模式时,先把整段脚本读入一个临时文件,然后用真正的文件路径
+# 重新 exec 自己,这样 stdin 自然空闲,read 也能正常从 /dev/tty 拿输入。
+#
 PIPED_EXEC=false
 NO_TTY=false
-if [[ ! -t 0 ]]; then
-    printf '\033[2m   检测到 stdin 不是 TTY (管道执行模式),尝试接管 /dev/tty 用于交互...\033[0m\n'
-    # 先验证 /dev/tty 可读,再 exec(避免 bash 自己打印 "Device not configured")
-    if [[ -e /dev/tty ]] && (exec </dev/tty) 2>/dev/null; then
-        exec </dev/tty
-        PIPED_EXEC=true
-        printf '\033[0;32m   ✓ 已接管 /dev/tty,可正常交互\033[0m\n'
+if [[ ! -t 0 ]] && [[ -z "${OPENCODE_JDTLS_LOMBOK_REEXEC:-}" ]]; then
+    printf '\033[2m   检测到 stdin 不是 TTY (管道执行模式),正在重新加载脚本以启用交互...\033[0m\n'
+    if [[ -e /dev/tty ]] && (: </dev/tty) 2>/dev/null; then
+        # 把当前正在执行的脚本(从 stdin 流入)落盘到临时文件
+        tmp_script="$(mktemp -t opencode-jdtls-lombok.XXXXXX.sh)"
+        # shellcheck disable=SC2064
+        trap "rm -f '$tmp_script'" EXIT
+        # 写入 shebang + 已读取的剩余 stdin 内容
+        # 注意: 这里 cat 会读取整段脚本剩余内容 (curl 还在往管道里灌的也会被消费)
+        cat > "$tmp_script"
+        # 标记为已 re-exec,避免无限递归;同时显式指定 stdin 来自 /dev/tty
+        export OPENCODE_JDTLS_LOMBOK_REEXEC=1
+        printf '\033[0;32m   ✓ 脚本已落盘,接管 /dev/tty 后重新执行\033[0m\n'
+        exec bash "$tmp_script" "$@" </dev/tty
     else
         NO_TTY=true
         printf '\033[1;33m   ⚠ 无法打开 /dev/tty,将进入非交互模式(需配合 --yes)\033[0m\n'
     fi
+fi
+
+# 如果是被 re-exec 调起的,提示一下并清掉环境变量
+if [[ -n "${OPENCODE_JDTLS_LOMBOK_REEXEC:-}" ]]; then
+    PIPED_EXEC=true
+    unset OPENCODE_JDTLS_LOMBOK_REEXEC
 fi
 
 # 现在再开启 -e
