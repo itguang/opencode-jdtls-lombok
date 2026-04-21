@@ -2,7 +2,9 @@
 
 为 [opencode](https://opencode.ai) 内置的 jdtls 注入 Lombok javaagent，**消除 Java 项目中 `@Data` / `@Slf4j` / `@RequiredArgsConstructor` 等 Lombok 注解导致的 LSP 假阳性报错**。
 
-> 本脚本是 [`promo-ai-hub`](../../README.md) 仓库 `scripts/` 目录下的辅助工具，独立于 `skills/` 目录中的 GenX 技能定义，与 LLM 运行时无关，仅用于本机 opencode 环境配置。
+仓库地址：<https://github.com/itguang/opencode-jdtls-lombok>
+
+> 本工具仅在本机修改 opencode 配置，与 LLM 运行时、模型提供方均无关。
 
 ## 解决了什么
 
@@ -23,20 +25,20 @@ ERROR The constructor Foo(...) is undefined
 ### 方式 1：克隆本仓库后运行（推荐）
 
 ```bash
-git clone git@gitlab.tuhuyun.cn:mkt/promo-ai-hub.git
-bash promo-ai-hub/scripts/opencode-jdtls-lombok/install.sh
+git clone git@github.com:itguang/opencode-jdtls-lombok.git
+bash opencode-jdtls-lombok/install.sh
 ```
 
-如果你已经 clone 了 `promo-ai-hub` 仓库：
+如果你已经 clone 了本仓库：
 
 ```bash
-bash <仓库根>/scripts/opencode-jdtls-lombok/install.sh
+bash <仓库根>/install.sh
 ```
 
 ### 方式 2：非交互式（CI 或自动化场景）
 
 ```bash
-bash scripts/opencode-jdtls-lombok/install.sh --yes
+bash install.sh --yes
 ```
 
 ### 方式 3：指定 Lombok 版本
@@ -44,7 +46,20 @@ bash scripts/opencode-jdtls-lombok/install.sh --yes
 默认行为是**优先使用本机 `~/.m2` 中最高版本的 Lombok**，没有则从 Maven Central 下载 `1.18.34`。如果想强制指定版本：
 
 ```bash
-bash scripts/opencode-jdtls-lombok/install.sh --lombok-version 1.18.30
+bash install.sh --lombok-version 1.18.30
+```
+
+### 方式 4：一行远程安装（无需 clone）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash
+```
+
+如需非交互或指定版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --lombok-version 1.18.30
 ```
 
 ---
@@ -69,13 +84,13 @@ rm -rf ~/.cache/jdtls/
 ## 卸载
 
 ```bash
-bash scripts/opencode-jdtls-lombok/install.sh --uninstall
+bash install.sh --uninstall
 ```
 
 或非交互：
 
 ```bash
-bash scripts/opencode-jdtls-lombok/install.sh --uninstall --yes
+bash install.sh --uninstall --yes
 ```
 
 卸载行为：
@@ -187,7 +202,7 @@ brew install jq
 
 ### Q5：支持升级吗？
 
-直接重跑 `bash scripts/opencode-jdtls-lombok/install.sh` 即可。脚本会检测已有配置并提示覆盖，自动选用本地 Maven 仓库中新版本的 Lombok jar。
+直接重跑 `bash install.sh` 即可。脚本会检测已有配置并提示覆盖，自动选用本地 Maven 仓库中新版本的 Lombok jar。
 
 ### Q6：lombok 版本和我项目用的不一致会有问题吗？
 
@@ -214,6 +229,12 @@ OPTIONS:
   --uninstall                   卸载（移除 lsp.jdtls 配置）
   -h, --help                    显示帮助
 ```
+
+---
+
+## 反馈与贡献
+
+欢迎提 Issue / PR：<https://github.com/itguang/opencode-jdtls-lombok/issues>
 
 ---
 
