@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/
 curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --lombok-version 1.18.30
 ```
 
-> 💡 通过 `curl | bash` 管道执行时，脚本会**自动接管 `/dev/tty`** 用于交互确认，无需额外操作。如果你的环境完全没有 TTY（如某些 CI），脚本会明确报错并提示加 `--yes`。
+> 💡 通过 `curl | bash` 管道执行时，脚本**不会改写脚本自身的 stdin**，而是只在需要确认时单独从 `/dev/tty` 读取输入，因此不会再出现“前面有输出，最后确认时卡死/直接取消”的问题。如果环境完全没有 TTY（如某些 CI），脚本会明确提示改用 `--yes`。
 
 ---
 
@@ -52,8 +52,8 @@ curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/
 
 ```
 [opencode-jdtls-lombok] 脚本启动中...
-   检测到 stdin 不是 TTY (管道执行模式),尝试接管 /dev/tty 用于交互...
-   ✓ 已接管 /dev/tty,可正常交互
+   检测到 stdin 不是 TTY (管道执行模式),后续确认将尝试从 /dev/tty 读取...
+   ✓ 已连接 /dev/tty,可正常交互确认
 
 ╔═══════════════════════════════════════════════════════════╗
 ║ 🚀 opencode jdtls Lombok 集成器                           ║
@@ -280,7 +280,19 @@ OPTIONS:
 
 当前脚本搜索路径写在 `find_opencode_jdtls()` 函数的 `candidates` 数组中（`~/.local/share/opencode`、`/usr/local/share/opencode`、`/opt/opencode`）。如果你的 opencode 装在其他位置，目前需要手动修改 `install.sh` 中的该数组。后续如有需要可加 `--jdtls-path` 参数支持。
 
-### Q9：`curl ... | bash` 执行后完全静默，没有任何输出怎么办？
+### Q9：`curl ... | bash` 为什么现在不会再卡在最后的确认步骤？
+
+旧版本的问题根因是：把脚本的 `stdin` 和用户输入共用了一条通道，甚至尝试在运行过程中切换 `stdin`。这在 `bash` 流式读取管道脚本时非常脆弱，容易出现“前面能跑，最后确认直接卡死/取消”。
+
+当前脚本的做法是：
+
+- 脚本内容继续从原始 `stdin` 读取
+- 只有 `confirm` 时，才单独从 `/dev/tty` 读取用户输入
+- 如果当前环境没有可用 TTY，则明确提示你改用 `--yes`
+
+也就是说，`curl | bash` 下脚本解析和用户交互已经解耦，不再互相干扰。
+
+### Q10：`curl ... | bash` 执行后完全静默，没有任何输出怎么办？
 
 99% 是 GitHub raw 的 CDN 缓存命中了旧版本（缓存时间约 5 分钟）。两种处理方式：
 
@@ -294,7 +306,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombo
 
 最新版脚本启动后会**立即**输出一行 `[opencode-jdtls-lombok] 脚本启动中...`，如果你看到这行就说明脚本正常运行；如果连这行都没有，则一定是缓存或网络问题。
 
-### Q10：在 CI / Docker / 完全无 TTY 的环境里怎么用？
+### Q11：在 CI / Docker / 完全无 TTY 的环境里怎么用？
 
 脚本检测到既无 stdin TTY、也无 `/dev/tty` 时，会在需要交互的地方明确报错并退出，提示你加 `--yes`。CI 中正确用法：
 

@@ -12,50 +12,37 @@
 #   bash install.sh --uninstall          # 卸载
 #
 
-set -uo pipefail
+set -euo pipefail
 
-# 立即给出一行输出,确认脚本已开始执行(便于排查 curl|bash 卡住的问题)
+# 立即给出一行输出,确认脚本已开始执行。
 printf '\n\033[1;36m[opencode-jdtls-lombok] 脚本启动中...\033[0m\n'
 
-# ---------- 修复管道执行 (curl ... | bash) 时 stdin 被占用导致 read 取不到输入 ----------
-#
-# 关键背景: bash 通过管道执行脚本时,是边读 stdin 边执行的(streaming),不是一次性
-# 读完。如果脚本中途执行 `exec </dev/tty` 切换 stdin,bash 后续将无法继续读取
-# 脚本本身——直接卡死或报错。
-#
-# 解法: 检测到管道模式时,先把整段脚本读入一个临时文件,然后用真正的文件路径
-# 重新 exec 自己,这样 stdin 自然空闲,read 也能正常从 /dev/tty 拿输入。
-#
+# ---------- 交互输入通道 ----------
+# 关键原则: 不要修改脚本自身的 stdin。
+# `curl ... | bash` 时,stdin 属于脚本内容流;确认输入必须单独从 /dev/tty 读取。
 PIPED_EXEC=false
-NO_TTY=false
-if [[ ! -t 0 ]] && [[ -z "${OPENCODE_JDTLS_LOMBOK_REEXEC:-}" ]]; then
-    printf '\033[2m   检测到 stdin 不是 TTY (管道执行模式),正在重新加载脚本以启用交互...\033[0m\n'
-    if [[ -e /dev/tty ]] && (: </dev/tty) 2>/dev/null; then
-        # 把当前正在执行的脚本(从 stdin 流入)落盘到临时文件
-        tmp_script="$(mktemp -t opencode-jdtls-lombok.XXXXXX.sh)"
-        # shellcheck disable=SC2064
-        trap "rm -f '$tmp_script'" EXIT
-        # 写入 shebang + 已读取的剩余 stdin 内容
-        # 注意: 这里 cat 会读取整段脚本剩余内容 (curl 还在往管道里灌的也会被消费)
-        cat > "$tmp_script"
-        # 标记为已 re-exec,避免无限递归;同时显式指定 stdin 来自 /dev/tty
-        export OPENCODE_JDTLS_LOMBOK_REEXEC=1
-        printf '\033[0;32m   ✓ 脚本已落盘,接管 /dev/tty 后重新执行\033[0m\n'
-        exec bash "$tmp_script" "$@" </dev/tty
+PROMPT_MODE="stdin"
+PROMPT_FD=0
+if [[ ! -t 0 ]]; then
+    PIPED_EXEC=true
+    printf '\033[2m   检测到 stdin 不是 TTY (管道执行模式),后续确认将尝试从 /dev/tty 读取...\033[0m\n'
+    if (: </dev/tty) 2>/dev/null; then
+        exec 3</dev/tty
+        PROMPT_MODE="tty"
+        PROMPT_FD=3
+        printf '\033[0;32m   ✓ 已连接 /dev/tty,可正常交互确认\033[0m\n'
     else
-        NO_TTY=true
+        PROMPT_MODE="none"
         printf '\033[1;33m   ⚠ 无法打开 /dev/tty,将进入非交互模式(需配合 --yes)\033[0m\n'
     fi
 fi
 
-# 如果是被 re-exec 调起的,提示一下并清掉环境变量
-if [[ -n "${OPENCODE_JDTLS_LOMBOK_REEXEC:-}" ]]; then
-    PIPED_EXEC=true
-    unset OPENCODE_JDTLS_LOMBOK_REEXEC
-fi
-
-# 现在再开启 -e
-set -e
+cleanup() {
+    if [[ "$PROMPT_MODE" == "tty" ]]; then
+        exec 3<&-
+    fi
+}
+trap cleanup EXIT
 
 # ---------- 常量 ----------
 DEFAULT_LOMBOK_VERSION="1.18.34"   # 当本地 ~/.m2 没有时,从 Maven Central 下载的版本
@@ -121,7 +108,7 @@ confirm() {
         hint "(--yes 模式)自动确认: $1"
         return 0
     fi
-    if $NO_TTY; then
+    if [[ "$PROMPT_MODE" == "none" ]]; then
         err "无可用 TTY,无法交互确认: $1"
         err "请改用以下方式之一重新执行:"
         err "  1) bash <(curl -fsSL <脚本URL>)         # 推荐,保留交互"
@@ -132,7 +119,7 @@ confirm() {
     echo
     prompt_h "$prompt"
     hint "请输入 y 确认 / N 取消(默认 N,直接回车=取消)"
-    read -r -p "$(echo -e "${MAGENTA}❯${NC} ")" reply
+    read -r -u "$PROMPT_FD" -p "$(echo -e "${MAGENTA}❯${NC} ")" reply
     [[ "$reply" =~ ^[Yy]$ ]]
 }
 
@@ -355,12 +342,12 @@ main() {
         cat <<EOF
 
   本脚本会执行以下操作:
-    ${CYAN}1.${NC} 检测 opencode 配置文件是否存在
-    ${CYAN}2.${NC} 备份现有 opencode.json
-    ${CYAN}3.${NC} 从配置中移除 lsp.jdtls 段
-    ${CYAN}4.${NC} (可选) 删除下载的 Lombok jar 缓存目录
+    1. 检测 opencode 配置文件是否存在
+    2. 备份现有 opencode.json
+    3. 从配置中移除 lsp.jdtls 段
+    4. (可选) 删除下载的 Lombok jar 缓存目录
 
-  ${DIM}过程中会询问你 1~2 次确认,请按提示输入 y/N${NC}
+  过程中会询问你 1~2 次确认,请按提示输入 y/N
 EOF
 
         step "检测环境"
@@ -398,11 +385,11 @@ EOF
         banner "✅ 卸载完成"
         cat <<EOF
 
-  ${BOLD}下一步:${NC}
-    ${CYAN}▸${NC} 退出当前 opencode 会话(Ctrl+C / exit)
-    ${CYAN}▸${NC} 重新启动 opencode 后生效
+  下一步:
+    - 退出当前 opencode 会话(Ctrl+C / exit)
+    - 重新启动 opencode 后生效
 
-  ${BOLD}重新安装:${NC} bash $0
+  重新安装: bash install.sh
 EOF
         echo
         exit 0
@@ -413,22 +400,26 @@ EOF
     banner "🚀 opencode jdtls Lombok 集成器"
     if $PIPED_EXEC; then
         echo
-        info "检测到管道执行模式 (curl|bash),已自动接管 /dev/tty 用于交互"
+        if [[ "$PROMPT_MODE" == "tty" ]]; then
+            info "检测到管道执行模式 (curl|bash),确认输入将从 /dev/tty 读取"
+        else
+            info "检测到管道执行模式 (curl|bash),当前环境无可用 TTY"
+        fi
     fi
     cat <<EOF
 
   本脚本会自动完成以下事情(整体约耗时 10 秒~1 分钟):
-    ${CYAN}1.${NC} 检测当前操作系统
-    ${CYAN}2.${NC} 定位 opencode 内置的 jdtls 可执行文件
-    ${CYAN}3.${NC} 从本地 Maven 仓库或 Maven Central 获取 Lombok jar
-    ${CYAN}4.${NC} 预览即将写入 ~/.config/opencode/opencode.json 的配置
-    ${CYAN}5.${NC} 备份原配置并合并写入
+    1. 检测当前操作系统
+    2. 定位 opencode 内置的 jdtls 可执行文件
+    3. 从本地 Maven 仓库或 Maven Central 获取 Lombok jar
+    4. 预览即将写入 ~/.config/opencode/opencode.json 的配置
+    5. 备份原配置并合并写入
 
-  ${BOLD}你需要做的:${NC}
-    ${MAGENTA}❯${NC} 在脚本提示 "确认应用?" 时输入 y 回车 (跳过用 --yes)
-    ${MAGENTA}❯${NC} 配置完成后退出并重启 opencode
+  你需要做的:
+    - 在脚本提示 "确认应用?" 时输入 y 回车 (跳过用 --yes)
+    - 配置完成后退出并重启 opencode
 
-  ${DIM}回滚: bash $0 --uninstall${NC}
+  回滚: bash install.sh --uninstall
 EOF
 
     step "检测操作系统"
@@ -475,7 +466,7 @@ EOF
     info "即将合并写入以下内容到 $config_file:"
     echo
     cat <<EOF
-${DIM}  "lsp": {
+  "lsp": {
     "jdtls": {
       "command": [
         "$jdtls_path",
@@ -483,7 +474,7 @@ ${DIM}  "lsp": {
       ],
       "extensions": [".java"]
     }
-  }${NC}
+  }
 EOF
     echo
     hint "说明: 这只会修改 lsp.jdtls 段,你已有的其他 opencode 配置都会保留"
@@ -498,19 +489,19 @@ EOF
     banner "🎉 安装完成!"
     cat <<EOF
 
-  ${BOLD}下一步(必须):${NC}
-    ${CYAN}▸${NC} ${BOLD}1.${NC} 退出当前 opencode 会话 (Ctrl+C / exit)
-    ${CYAN}▸${NC} ${BOLD}2.${NC} 重新启动 opencode
+  下一步(必须):
+    - 1. 退出当前 opencode 会话 (Ctrl+C / exit)
+    - 2. 重新启动 opencode
 
-  ${BOLD}如何验证生效:${NC}
-    ${CYAN}▸${NC} 打开任意 Java 项目,编辑一个带 ${YELLOW}@Data${NC} / ${YELLOW}@Slf4j${NC} 的类
-    ${CYAN}▸${NC} LSP 不再报 "log cannot be resolved" / "method getXxx() is undefined" 等假阳性
-    ${CYAN}▸${NC} 若仍有报错,先检查是否真正重启了 opencode
+  如何验证生效:
+    - 打开任意 Java 项目,编辑一个带 @Data / @Slf4j 的类
+    - LSP 不再报 "log cannot be resolved" / "method getXxx() is undefined" 等假阳性
+    - 若仍有报错,先检查是否真正重启了 opencode
 
-  ${BOLD}遇到问题:${NC}
-    ${CYAN}▸${NC} 回滚: ${YELLOW}bash $0 --uninstall${NC}
-    ${CYAN}▸${NC} 备份文件: $config_file.bak.*
-    ${CYAN}▸${NC} 升级 Lombok 版本: ${YELLOW}bash $0 --lombok-version 1.18.34${NC}
+  遇到问题:
+    - 回滚: bash install.sh --uninstall
+    - 备份文件: $config_file.bak.*
+    - 升级 Lombok 版本: bash install.sh --lombok-version 1.18.34
 EOF
     echo
 }
