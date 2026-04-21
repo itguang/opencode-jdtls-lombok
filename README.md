@@ -32,50 +32,18 @@ ERROR The constructor Foo(...) is undefined
 curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash
 ```
 
-**非交互安装**：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --yes
-```
-
 **指定 Lombok 版本**：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --lombok-version 1.18.30
 ```
 
-> 💡 `install.sh` 只支持 macOS / Linux / WSL。通过 `curl | bash` 管道执行时，脚本不会改写脚本自身的 stdin，而是只在需要确认时单独从 `/dev/tty` 读取输入。
-
 ### 原生 Windows（非 WSL）
-
-**交互式安装（推荐）**：
-
-```powershell
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.ps1 | iex"
-```
 
 **如果你已经在 PowerShell 会话中**，也可以直接执行：
 
 ```powershell
 irm https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.ps1 | iex
-```
-
-**本地文件执行**：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-**非交互安装**：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Yes
-```
-
-**指定 Lombok 版本**：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -LombokVersion 1.18.34
 ```
 
 ---
@@ -164,24 +132,12 @@ rm -rf ~/.cache/jdtls/
 curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --uninstall
 ```
 
-**本地脚本卸载**：
-
-```bash
-bash install.sh --uninstall
-# 或非交互
-bash install.sh --uninstall --yes
-```
-
 ### 原生 Windows（非 WSL）
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
-```
 
 或远程执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "& { irm https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.ps1 | iex } -Uninstall"
+irm https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.ps1 | iex } -Uninstall
 ```
 
 卸载向导也是分步骤的，同样有完成总结框。
@@ -293,29 +249,6 @@ brew install jq
 
 ---
 
-## 命令参考
-
-```text
-macOS / Linux / WSL:
-  bash install.sh [OPTIONS]
-
-  OPTIONS:
-    -y, --yes                     跳过所有交互确认
-    --lombok-version <version>    强制使用指定 Lombok 版本
-    --uninstall                   卸载（移除 lsp.jdtls 配置）
-    -h, --help                    显示帮助
-
-Windows PowerShell:
-  powershell -File .\install.ps1 [-Yes] [-LombokVersion <version>] [-Uninstall] [-Help]
-```
-
-**退出码**：
-
-- `0`：成功 / 用户主动取消
-- `1`：环境问题（无 TTY 又未带 `--yes`、找不到 jdtls、依赖缺失、JSON 损坏等）
-
----
-
 ## FAQ
 
 ### Q1：本地有多个 Lombok 版本，会用哪个？
@@ -351,44 +284,6 @@ Windows PowerShell:
 当前脚本搜索路径写在 `find_opencode_jdtls()` 函数的 `candidates` 数组中（`~/.local/share/opencode`、`/usr/local/share/opencode`、`/opt/opencode`）。如果你的 opencode 装在其他位置，目前需要手动修改 `install.sh` 中的该数组。后续如有需要可加 `--jdtls-path` 参数支持。
 
 Windows PowerShell 版则使用 `Get-JdtlsCandidates` 中的候选路径数组，思路相同。
-
-### Q9：`curl ... | bash` 为什么现在不会再卡在最后的确认步骤？
-
-旧版本的问题根因是：把脚本的 `stdin` 和用户输入共用了一条通道，甚至尝试在运行过程中切换 `stdin`。这在 `bash` 流式读取管道脚本时非常脆弱，容易出现“前面能跑，最后确认直接卡死/取消”。
-
-当前脚本的做法是：
-
-- 脚本内容继续从原始 `stdin` 读取
-- 只有 `confirm` 时，才单独从 `/dev/tty` 读取用户输入
-- 如果当前环境没有可用 TTY，则明确提示你改用 `--yes`
-
-也就是说，`curl | bash` 下脚本解析和用户交互已经解耦，不再互相干扰。
-
-### Q10：`curl ... | bash` 执行后完全静默，没有任何输出怎么办？
-
-99% 是 GitHub raw 的 CDN 缓存命中了旧版本（缓存时间约 5 分钟）。两种处理方式：
-
-```bash
-# 方案 1: 加时间戳绕过 CDN 缓存
-curl -fsSL "https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh?t=$(date +%s)" | bash
-
-# 方案 2: 改用 process substitution，stdin 仍是 TTY,行为最稳定
-bash <(curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh)
-```
-
-最新版脚本启动后会**立即**输出一行 `[opencode-jdtls-lombok] 脚本启动中...`，如果你看到这行就说明脚本正常运行；如果连这行都没有，则一定是缓存或网络问题。
-
-### Q11：在 CI / Docker / 完全无 TTY 的环境里怎么用？
-
-脚本检测到既无 stdin TTY、也无 `/dev/tty` 时，会在需要交互的地方明确报错并退出，提示你加 `--yes`。CI 中正确用法：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --yes
-```
-
-`--yes` 模式下脚本会逐条输出 `(--yes 模式)自动确认: <动作>`，便于在日志中审计实际跳过了哪些确认。
-
----
 
 ## 反馈与贡献
 
