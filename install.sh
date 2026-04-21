@@ -499,7 +499,7 @@ EOF
     - 若仍有报错,先检查是否真正重启了 opencode
 
   遇到问题:
-    - 回滚: bash install.sh --uninstall
+    - 回滚: curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash -s -- --uninstall
     - 备份文件: $config_file.bak.*
     - 升级 Lombok 版本: bash install.sh --lombok-version 1.18.34
 EOF
