@@ -12,20 +12,30 @@
 #   bash install.sh --uninstall          # 卸载
 #
 
-set -euo pipefail
+set -uo pipefail
+
+# 立即给出一行输出,确认脚本已开始执行(便于排查 curl|bash 卡住的问题)
+printf '\n\033[1;36m[opencode-jdtls-lombok] 脚本启动中...\033[0m\n'
 
 # ---------- 修复管道执行 (curl ... | bash) 时 stdin 被占用导致 read 取不到输入 ----------
-# 若 stdin 不是 TTY 但 /dev/tty 可用,则重新挂接,保证后续 read 能与用户交互。
+# 必须在 set -e 之前完成 stdin 重接,否则 exec 失败会直接静默退出。
 PIPED_EXEC=false
 NO_TTY=false
 if [[ ! -t 0 ]]; then
-    if { exec </dev/tty; } 2>/dev/null; then
+    printf '\033[2m   检测到 stdin 不是 TTY (管道执行模式),尝试接管 /dev/tty 用于交互...\033[0m\n'
+    # 先验证 /dev/tty 可读,再 exec(避免 bash 自己打印 "Device not configured")
+    if [[ -e /dev/tty ]] && (exec </dev/tty) 2>/dev/null; then
+        exec </dev/tty
         PIPED_EXEC=true
+        printf '\033[0;32m   ✓ 已接管 /dev/tty,可正常交互\033[0m\n'
     else
-        # 没有可用 tty,只能进入 --yes 自动模式(调用方应改用 bash <(curl -fsSL ...))
         NO_TTY=true
+        printf '\033[1;33m   ⚠ 无法打开 /dev/tty,将进入非交互模式(需配合 --yes)\033[0m\n'
     fi
 fi
+
+# 现在再开启 -e
+set -e
 
 # ---------- 常量 ----------
 DEFAULT_LOMBOK_VERSION="1.18.34"   # 当本地 ~/.m2 没有时,从 Maven Central 下载的版本
