@@ -21,16 +21,39 @@ MAVEN_CENTRAL_URL="https://repo1.maven.org/maven2/org/projectlombok/lombok"
 
 # ---------- 颜色输出 ----------
 if [[ -t 1 ]]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
+    BOLD='\033[1m'; DIM='\033[2m'; CYAN='\033[0;36m'; MAGENTA='\033[0;35m'; NC='\033[0m'
 else
-    RED=''; GREEN=''; YELLOW=''; BLUE=''; NC=''
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; BOLD=''; DIM=''; CYAN=''; MAGENTA=''; NC=''
 fi
 
-info()    { echo -e "${BLUE}[INFO]${NC}  $*"; }
-success() { echo -e "${GREEN}[ OK ]${NC}  $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-err()     { echo -e "${RED}[ERR ]${NC}  $*" >&2; }
+info()    { echo -e "${BLUE}ℹ${NC}  $*"; }
+success() { echo -e "${GREEN}✓${NC}  $*"; }
+warn()    { echo -e "${YELLOW}⚠${NC}  $*"; }
+err()     { echo -e "${RED}✗${NC}  $*" >&2; }
 die()     { err "$*"; exit 1; }
+action()  { echo -e "${CYAN}➜${NC}  $*"; }   # 正在做某件事(短暂等待)
+hint()    { echo -e "${DIM}   $*${NC}"; }    # 灰色辅助说明
+prompt_h(){ echo -e "${MAGENTA}❓${NC} ${BOLD}$*${NC}"; }  # 需要用户操作的提示
+
+# 步骤标题: step 1/5 标题
+TOTAL_STEPS=0
+CURRENT_STEP=0
+step() {
+    CURRENT_STEP=$((CURRENT_STEP + 1))
+    echo
+    echo -e "${BOLD}${BLUE}▶ [步骤 ${CURRENT_STEP}/${TOTAL_STEPS}]${NC} ${BOLD}$*${NC}"
+    echo -e "${DIM}─────────────────────────────────────────────────────────${NC}"
+}
+
+# 区块标题(用于欢迎页/总结页)
+banner() {
+    local title="$1"
+    echo
+    echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════╗${NC}"
+    printf "${BOLD}${CYAN}║${NC} ${BOLD}%-57s${NC} ${BOLD}${CYAN}║${NC}\n" "$title"
+    echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
+}
 
 # ---------- 参数解析 ----------
 ASSUME_YES=false
@@ -43,16 +66,23 @@ while [[ $# -gt 0 ]]; do
         --lombok-version)     LOMBOK_VERSION_OVERRIDE="$2"; shift 2 ;;
         --uninstall)          ACTION="uninstall"; shift ;;
         -h|--help)
-            grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'
+            # 只输出文件头的说明块(到第一行非注释/空行为止)
+            awk 'NR==1 && /^#!/{next} /^#/{sub(/^# ?/,""); print; next} /^[[:space:]]*$/{print; next} {exit}' "$0"
             exit 0 ;;
         *) die "未知参数: $1 (使用 --help 查看用法)" ;;
     esac
 done
 
 confirm() {
-    $ASSUME_YES && return 0
+    if $ASSUME_YES; then
+        hint "(--yes 模式)自动确认: $1"
+        return 0
+    fi
     local prompt="$1"
-    read -r -p "$(echo -e "${YELLOW}?${NC} $prompt [y/N] ")" reply
+    echo
+    prompt_h "$prompt"
+    hint "请输入 y 确认 / N 取消(默认 N,直接回车=取消)"
+    read -r -p "$(echo -e "${MAGENTA}❯${NC} ")" reply
     [[ "$reply" =~ ^[Yy]$ ]]
 }
 
@@ -80,7 +110,9 @@ find_opencode_jdtls() {
         "/usr/local/share/opencode/bin/jdtls/bin/jdtls"
         "/opt/opencode/bin/jdtls/bin/jdtls"
     )
+    action "🔍 正在搜索 opencode 内置 jdtls (扫描 ${#candidates[@]} 个常用安装位置)..." >&2
     for path in "${candidates[@]}"; do
+        hint "检查: $path" >&2
         if [[ -x "$path" ]]; then
             echo "$path"
             return 0
@@ -95,15 +127,18 @@ find_local_lombok() {
     # 支持自定义 ~/.m2/settings.xml 中的 localRepository
     local maven_repo="$HOME/.m2/repository"
     if command -v mvn >/dev/null 2>&1; then
+        action "🔍 检测到 mvn 命令,正在解析本地 Maven 仓库路径(可能耗时几秒)..." >&2
         local custom_repo
         custom_repo="$(mvn help:evaluate -Dexpression=settings.localRepository -q -DforceStdout 2>/dev/null || true)"
         if [[ -n "$custom_repo" && -d "$custom_repo" ]]; then
             maven_repo="$custom_repo"
+            hint "使用自定义 Maven 仓库: $maven_repo" >&2
         fi
     fi
 
     local lombok_dir="$maven_repo/org/projectlombok/lombok"
-    [[ -d "$lombok_dir" ]] || return 1
+    action "🔍 在 $lombok_dir 中扫描已安装的 Lombok 版本..." >&2
+    [[ -d "$lombok_dir" ]] || { hint "目录不存在,跳过本地查找" >&2; return 1; }
 
     # 选最高版本(纯版本号目录,排除 _remote.repositories 等文件)
     local best_version=""
@@ -114,7 +149,7 @@ find_local_lombok() {
         fi
     done < <(ls -1 "$lombok_dir" 2>/dev/null)
 
-    [[ -n "$best_version" ]] || return 1
+    [[ -n "$best_version" ]] || { hint "未找到任何 Lombok 版本" >&2; return 1; }
     echo "$lombok_dir/$best_version/lombok-$best_version.jar"
 }
 
@@ -123,13 +158,19 @@ download_lombok() {
     local target_dir="$LOMBOK_DOWNLOAD_DIR"
     local target_jar="$target_dir/lombok-$version.jar"
     if [[ -f "$target_jar" ]]; then
+        info "使用已缓存的 Lombok: $target_jar" >&2
         echo "$target_jar"
         return 0
     fi
 
     mkdir -p "$target_dir"
     local url="$MAVEN_CENTRAL_URL/$version/lombok-$version.jar"
-    info "下载 Lombok $version 自 $url" >&2
+    echo >&2
+    action "⬇️  即将从 Maven Central 下载 Lombok $version" >&2
+    hint "源地址: $url" >&2
+    hint "保存到: $target_jar" >&2
+    hint "文件约 2 MB,正常网络几秒可完成,过程中可见进度条..." >&2
+    echo >&2
     if command -v curl >/dev/null 2>&1; then
         curl -fSL --progress-bar "$url" -o "$target_jar.tmp" >&2 || die "下载失败: $url"
     elif command -v wget >/dev/null 2>&1; then
@@ -138,20 +179,22 @@ download_lombok() {
         die "未找到 curl 或 wget,无法下载 Lombok"
     fi
     mv "$target_jar.tmp" "$target_jar"
+    success "✅ 下载完成: $target_jar" >&2
     echo "$target_jar"
 }
 
 resolve_lombok_jar() {
     if [[ -n "$LOMBOK_VERSION_OVERRIDE" ]]; then
+        info "用户指定 Lombok 版本: $LOMBOK_VERSION_OVERRIDE,跳过本地查找" >&2
         download_lombok "$LOMBOK_VERSION_OVERRIDE"
         return
     fi
     local local_jar
     if local_jar="$(find_local_lombok)"; then
-        info "在本地 Maven 仓库找到: $local_jar" >&2
+        success "在本地 Maven 仓库找到: $local_jar" >&2
         echo "$local_jar"
     else
-        warn "本地 Maven 仓库未找到 Lombok,将从 Maven Central 下载 $DEFAULT_LOMBOK_VERSION" >&2
+        warn "本地 Maven 仓库未找到 Lombok,将从 Maven Central 下载默认版本 $DEFAULT_LOMBOK_VERSION" >&2
         download_lombok "$DEFAULT_LOMBOK_VERSION"
     fi
 }
@@ -244,71 +287,137 @@ PY
 backup_file() {
     local file="$1"
     local backup="${file}.bak.$(date +%Y%m%d%H%M%S)"
+    action "💾 正在备份原配置..."
     cp "$file" "$backup"
-    info "已备份原配置: $backup"
+    success "已备份: $backup"
+    hint "如需回滚,可手动执行: cp \"$backup\" \"$file\""
 }
 
 # ---------- 主流程 ----------
 main() {
-    info "opencode jdtls Lombok 集成器"
-    echo
+    if [[ "$ACTION" == "uninstall" ]]; then
+        TOTAL_STEPS=3
+        banner "🧹 opencode jdtls Lombok 卸载向导"
+        cat <<EOF
 
+  本脚本会执行以下操作:
+    ${CYAN}1.${NC} 检测 opencode 配置文件是否存在
+    ${CYAN}2.${NC} 备份现有 opencode.json
+    ${CYAN}3.${NC} 从配置中移除 lsp.jdtls 段
+    ${CYAN}4.${NC} (可选) 删除下载的 Lombok jar 缓存目录
+
+  ${DIM}过程中会询问你 1~2 次确认,请按提示输入 y/N${NC}
+EOF
+
+        step "检测环境"
+        local os; os="$(detect_os)"
+        success "操作系统: $os"
+
+        local config_dir="$HOME/.config/opencode"
+        local config_file="$config_dir/opencode.json"
+        if [[ ! -f "$config_file" ]]; then
+            warn "opencode 配置不存在($config_file),无需卸载"
+            exit 0
+        fi
+        success "找到配置文件: $config_file"
+
+        step "移除 lsp.jdtls 配置"
+        confirm "确认从 $config_file 中移除 lsp.jdtls 配置?(将先备份)" \
+            || { info "已取消,未做任何修改"; exit 0; }
+        backup_file "$config_file"
+        action "正在重写配置文件..."
+        remove_jdtls_from_config "$config_file"
+        success "已移除 lsp.jdtls 配置"
+
+        step "清理缓存(可选)"
+        if [[ -d "$LOMBOK_DOWNLOAD_DIR" ]]; then
+            if confirm "是否同时删除下载的 Lombok jar 目录 $LOMBOK_DOWNLOAD_DIR?"; then
+                rm -rf "$LOMBOK_DOWNLOAD_DIR"
+                success "已删除 $LOMBOK_DOWNLOAD_DIR"
+            else
+                info "保留 $LOMBOK_DOWNLOAD_DIR(下次安装可复用)"
+            fi
+        else
+            info "无下载缓存目录,跳过"
+        fi
+
+        banner "✅ 卸载完成"
+        cat <<EOF
+
+  ${BOLD}下一步:${NC}
+    ${CYAN}▸${NC} 退出当前 opencode 会话(Ctrl+C / exit)
+    ${CYAN}▸${NC} 重新启动 opencode 后生效
+
+  ${BOLD}重新安装:${NC} bash $0
+EOF
+        echo
+        exit 0
+    fi
+
+    # ===== 安装流程 =====
+    TOTAL_STEPS=5
+    banner "🚀 opencode jdtls Lombok 集成器"
+    cat <<EOF
+
+  本脚本会自动完成以下事情(整体约耗时 10 秒~1 分钟):
+    ${CYAN}1.${NC} 检测当前操作系统
+    ${CYAN}2.${NC} 定位 opencode 内置的 jdtls 可执行文件
+    ${CYAN}3.${NC} 从本地 Maven 仓库或 Maven Central 获取 Lombok jar
+    ${CYAN}4.${NC} 预览即将写入 ~/.config/opencode/opencode.json 的配置
+    ${CYAN}5.${NC} 备份原配置并合并写入
+
+  ${BOLD}你需要做的:${NC}
+    ${MAGENTA}❯${NC} 在脚本提示 "确认应用?" 时输入 y 回车 (跳过用 --yes)
+    ${MAGENTA}❯${NC} 配置完成后退出并重启 opencode
+
+  ${DIM}回滚: bash $0 --uninstall${NC}
+EOF
+
+    step "检测操作系统"
     local os; os="$(detect_os)"
-    info "操作系统: $os"
+    success "操作系统: $os"
 
+    step "查找 opencode 内置 jdtls"
     local jdtls_path
     if ! jdtls_path="$(find_opencode_jdtls)"; then
         die "找不到 opencode jdtls,请先安装 opencode (https://opencode.ai/docs/)"
     fi
     success "找到 opencode jdtls: $jdtls_path"
 
+    step "解析 Lombok jar"
+    local lombok_jar; lombok_jar="$(resolve_lombok_jar)"
+    success "Lombok jar: $lombok_jar"
+
     # opencode 配置目录
     local config_dir="$HOME/.config/opencode"
     local config_file="$config_dir/opencode.json"
     mkdir -p "$config_dir"
 
-    if [[ "$ACTION" == "uninstall" ]]; then
-        if [[ ! -f "$config_file" ]]; then
-            warn "opencode 配置不存在,无需卸载"
-            exit 0
-        fi
-        confirm "确认从 $config_file 中移除 lsp.jdtls 配置?" || { info "取消"; exit 0; }
-        backup_file "$config_file"
-        remove_jdtls_from_config "$config_file"
-        success "已移除 lsp.jdtls 配置"
-        if [[ -d "$LOMBOK_DOWNLOAD_DIR" ]]; then
-            if confirm "是否同时删除下载的 Lombok jar 目录 $LOMBOK_DOWNLOAD_DIR?"; then
-                rm -rf "$LOMBOK_DOWNLOAD_DIR"
-                success "已删除 $LOMBOK_DOWNLOAD_DIR"
-            fi
-        fi
-        info "重启 opencode 后生效"
-        exit 0
-    fi
-
-    local lombok_jar; lombok_jar="$(resolve_lombok_jar)"
-    success "Lombok jar: $lombok_jar"
-
+    step "准备 opencode 配置文件"
     # 配置文件不存在则创建空 JSON
     if [[ ! -f "$config_file" ]]; then
         echo '{}' > "$config_file"
-        info "创建新配置: $config_file"
+        info "未发现现有配置,已创建新文件: $config_file"
     else
+        info "找到现有配置: $config_file"
         # 校验现有配置是 JSON
+        action "校验 JSON 合法性..."
         if ! python3 -c "import json,sys; json.load(open('$config_file'))" 2>/dev/null \
            && ! (command -v jq >/dev/null && jq empty "$config_file" 2>/dev/null); then
             die "现有 $config_file 不是合法 JSON,请先手动修复"
         fi
+        success "现有配置 JSON 合法"
         # 检查是否已配置过
         if grep -q '"jdtls"' "$config_file" 2>/dev/null; then
-            warn "检测到 lsp.jdtls 配置已存在,将覆盖"
+            warn "检测到 lsp.jdtls 配置已存在,稍后将被覆盖(原文件会先备份)"
         fi
     fi
 
+    step "预览并写入配置"
+    info "即将合并写入以下内容到 $config_file:"
     echo
-    info "即将写入以下配置到 $config_file:"
     cat <<EOF
-  "lsp": {
+${DIM}  "lsp": {
     "jdtls": {
       "command": [
         "$jdtls_path",
@@ -316,22 +425,36 @@ main() {
       ],
       "extensions": [".java"]
     }
-  }
+  }${NC}
 EOF
     echo
-    confirm "确认应用?" || { info "取消"; exit 0; }
+    hint "说明: 这只会修改 lsp.jdtls 段,你已有的其他 opencode 配置都会保留"
+    hint "原 opencode.json 会备份为 opencode.json.bak.<时间戳>"
+    confirm "确认应用?" || { info "已取消,未做任何修改"; exit 0; }
 
     backup_file "$config_file"
+    action "正在合并 JSON 配置..."
     merge_config "$config_file" "$jdtls_path" "$lombok_jar"
     success "配置已写入"
 
+    banner "🎉 安装完成!"
+    cat <<EOF
+
+  ${BOLD}下一步(必须):${NC}
+    ${CYAN}▸${NC} ${BOLD}1.${NC} 退出当前 opencode 会话 (Ctrl+C / exit)
+    ${CYAN}▸${NC} ${BOLD}2.${NC} 重新启动 opencode
+
+  ${BOLD}如何验证生效:${NC}
+    ${CYAN}▸${NC} 打开任意 Java 项目,编辑一个带 ${YELLOW}@Data${NC} / ${YELLOW}@Slf4j${NC} 的类
+    ${CYAN}▸${NC} LSP 不再报 "log cannot be resolved" / "method getXxx() is undefined" 等假阳性
+    ${CYAN}▸${NC} 若仍有报错,先检查是否真正重启了 opencode
+
+  ${BOLD}遇到问题:${NC}
+    ${CYAN}▸${NC} 回滚: ${YELLOW}bash $0 --uninstall${NC}
+    ${CYAN}▸${NC} 备份文件: $config_file.bak.*
+    ${CYAN}▸${NC} 升级 Lombok 版本: ${YELLOW}bash $0 --lombok-version 1.18.34${NC}
+EOF
     echo
-    info "下一步:"
-    echo "  1. 退出当前 opencode 会话(Ctrl+C / exit)"
-    echo "  2. 重新启动 opencode"
-    echo "  3. 打开任意 Java 项目验证: 编辑带 @Data/@Slf4j 的类,LSP 应不再报 Lombok 假阳性"
-    echo
-    info "回滚: bash $0 --uninstall"
 }
 
 main "$@"

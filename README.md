@@ -22,35 +22,7 @@ ERROR The constructor Foo(...) is undefined
 
 ## 一键安装
 
-### 方式 1：克隆本仓库后运行（推荐）
-
-```bash
-git clone git@github.com:itguang/opencode-jdtls-lombok.git
-bash opencode-jdtls-lombok/install.sh
-```
-
-如果你已经 clone 了本仓库：
-
-```bash
-bash <仓库根>/install.sh
-```
-
-### 方式 2：非交互式（CI 或自动化场景）
-
-```bash
-bash install.sh --yes
-```
-
-### 方式 3：指定 Lombok 版本
-
-默认行为是**优先使用本机 `~/.m2` 中最高版本的 Lombok**，没有则从 Maven Central 下载 `1.18.34`。如果想强制指定版本：
-
-```bash
-bash install.sh --lombok-version 1.18.30
-```
-
-### 方式 4：一行远程安装（无需 clone）
-
+交互式安装:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/itguang/opencode-jdtls-lombok/main/install.sh | bash
 ```
