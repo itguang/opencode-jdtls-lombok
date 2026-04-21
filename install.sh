@@ -14,6 +14,19 @@
 
 set -euo pipefail
 
+# ---------- 修复管道执行 (curl ... | bash) 时 stdin 被占用导致 read 取不到输入 ----------
+# 若 stdin 不是 TTY 但 /dev/tty 可用,则重新挂接,保证后续 read 能与用户交互。
+PIPED_EXEC=false
+NO_TTY=false
+if [[ ! -t 0 ]]; then
+    if { exec </dev/tty; } 2>/dev/null; then
+        PIPED_EXEC=true
+    else
+        # 没有可用 tty,只能进入 --yes 自动模式(调用方应改用 bash <(curl -fsSL ...))
+        NO_TTY=true
+    fi
+fi
+
 # ---------- 常量 ----------
 DEFAULT_LOMBOK_VERSION="1.18.34"   # 当本地 ~/.m2 没有时,从 Maven Central 下载的版本
 LOMBOK_DOWNLOAD_DIR="$HOME/.opencode-jdtls-lombok"
@@ -77,6 +90,13 @@ confirm() {
     if $ASSUME_YES; then
         hint "(--yes 模式)自动确认: $1"
         return 0
+    fi
+    if $NO_TTY; then
+        err "无可用 TTY,无法交互确认: $1"
+        err "请改用以下方式之一重新执行:"
+        err "  1) bash <(curl -fsSL <脚本URL>)         # 推荐,保留交互"
+        err "  2) curl -fsSL <脚本URL> | bash -s -- --yes   # 跳过所有确认"
+        exit 1
     fi
     local prompt="$1"
     echo
@@ -298,6 +318,10 @@ main() {
     if [[ "$ACTION" == "uninstall" ]]; then
         TOTAL_STEPS=3
         banner "🧹 opencode jdtls Lombok 卸载向导"
+        if $PIPED_EXEC; then
+            echo
+            info "检测到管道执行模式 (curl|bash),已自动接管 /dev/tty 用于交互"
+        fi
         cat <<EOF
 
   本脚本会执行以下操作:
@@ -357,6 +381,10 @@ EOF
     # ===== 安装流程 =====
     TOTAL_STEPS=5
     banner "🚀 opencode jdtls Lombok 集成器"
+    if $PIPED_EXEC; then
+        echo
+        info "检测到管道执行模式 (curl|bash),已自动接管 /dev/tty 用于交互"
+    fi
     cat <<EOF
 
   本脚本会自动完成以下事情(整体约耗时 10 秒~1 分钟):
