@@ -37,6 +37,18 @@ class InstallScriptTest(unittest.TestCase):
         lombok.parent.mkdir(parents=True)
         lombok.write_text("fake jar", encoding="utf-8")
 
+        # Fake JDK 21 for JAVA_HOME detection
+        jdk21 = self.home / "jdk-21"
+        jdk21_bin = jdk21 / "bin"
+        jdk21_bin.mkdir(parents=True)
+        self._write_executable(
+            jdk21_bin / "java",
+            '#!/usr/bin/env bash\n'
+            'echo \'openjdk version "21.0.1" 2023-10-17\' >&2\n'
+            'echo \'OpenJDK Runtime Environment (build 21.0.1+12)\' >&2\n'
+            'exit 0\n',
+        )
+
         self.config_dir = self.home / ".config/opencode"
         self.config_dir.mkdir(parents=True)
 
@@ -84,11 +96,14 @@ class InstallScriptTest(unittest.TestCase):
         config = (self.config_dir / "opencode.json").read_text(encoding="utf-8")
         self.assertIn("--jvm-arg=-javaagent:", config)
         self.assertIn("lombok-1.18.34.jar", config)
+        self.assertIn("JAVA_HOME", config)
+        self.assertIn("jdk-21", config)
 
     def _env(self):
         env = os.environ.copy()
         env["HOME"] = str(self.home)
-        env["PATH"] = f'{self.bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin'
+        env["PATH"] = f'{self.bin_dir}:{self.home / "jdk-21/bin"}:/usr/bin:/bin:/usr/sbin:/sbin'
+        env["JAVA_HOME"] = str(self.home / "jdk-21")
         env.pop("OPENCODE_JDTLS_LOMBOK_REEXEC", None)
         return env
 

@@ -21,6 +21,7 @@ class InstallPs1StructureTest(unittest.TestCase):
     def test_script_contains_core_functions(self):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("function Find-OpencodeJdtls", text)
+        self.assertIn("function Find-Java21", text)
         self.assertIn("function Resolve-LombokJar", text)
         self.assertIn("function Merge-JdtlsConfig", text)
         self.assertIn("function Remove-JdtlsConfig", text)

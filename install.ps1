@@ -116,6 +116,67 @@ function Find-OpencodeJdtls {
     throw '找不到 opencode jdtls,请先安装 opencode'
 }
 
+function Get-JavaMajorVersion([string]$JavaBin) {
+    try {
+        $output = & $JavaBin -version 2>&1 | Out-String
+        if ($output -match 'version "([^"]+)"') {
+            $ver = $Matches[1]
+            $major = ($ver -split '\.')[0]
+            if ($major -eq '1') {
+                $major = ($ver -split '\.')[1]
+            }
+            return [int]$major
+        }
+    } catch {}
+    return 0
+}
+
+function Find-Java21 {
+    Write-Action '🔍 正在搜索 JDK 21+ 安装(jdtls 需要 Java 21+ 才能稳定运行)...'
+    $bestPath = $null
+    $bestVer = 0
+
+    # 1) 检查当前 JAVA_HOME
+    if ($env:JAVA_HOME -and (Test-Path $env:JAVA_HOME)) {
+        Write-Hint "检查 JAVA_HOME=$($env:JAVA_HOME)"
+        $javaBin = Join-Path $env:JAVA_HOME 'bin\java.exe'
+        if (Test-Path $javaBin) {
+            $ver = Get-JavaMajorVersion -JavaBin $javaBin
+            if ($ver -ge 21 -and $ver -gt $bestVer) {
+                $bestVer = $ver
+                $bestPath = $env:JAVA_HOME
+            }
+        }
+    }
+
+    # 2) 扫描常见安装目录
+    $searchDirs = @()
+    if ($env:ProgramFiles) {
+        $searchDirs += "$env:ProgramFiles\Java\jdk-*"
+        $searchDirs += "$env:ProgramFiles\Eclipse Adoptium\jdk-*"
+        $searchDirs += "$env:ProgramFiles\Microsoft\jdk-*"
+    }
+    $searchDirs += "$UserHome\.jdks\*"
+    $searchDirs += "$UserHome\.sdkman\candidates\java\*"
+
+    foreach ($pattern in $searchDirs) {
+        foreach ($dir in (Get-Item -Path $pattern -ErrorAction SilentlyContinue)) {
+            if (-not $dir.PSIsContainer) { continue }
+            Write-Hint "检查: $($dir.FullName)"
+            $javaBin = Join-Path $dir.FullName 'bin\java.exe'
+            if (Test-Path $javaBin) {
+                $ver = Get-JavaMajorVersion -JavaBin $javaBin
+                if ($ver -ge 21 -and $ver -gt $bestVer) {
+                    $bestVer = $ver
+                    $bestPath = $dir.FullName
+                }
+            }
+        }
+    }
+
+    return $bestPath
+}
+
 function Get-MavenRepository {
     $defaultRepo = Join-Path $UserHome '.m2\repository'
     $mvn = Get-Command mvn -ErrorAction SilentlyContinue
@@ -221,7 +282,7 @@ function Write-ConfigObject([string]$Path, $Config) {
     [System.IO.File]::WriteAllText($Path, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 }
 
-function Merge-JdtlsConfig([string]$Path, [string]$JdtlsPath, [string]$LombokJar) {
+function Merge-JdtlsConfig([string]$Path, [string]$JdtlsPath, [string]$LombokJar, [string]$JavaHome) {
     $cfg = Read-ConfigObject -Path $Path
     $cfg['$schema'] = 'https://opencode.ai/config.json'
     if (-not $cfg.ContainsKey('lsp') -or $cfg['lsp'] -eq $null) {
@@ -230,10 +291,14 @@ function Merge-JdtlsConfig([string]$Path, [string]$JdtlsPath, [string]$LombokJar
     if (-not ($cfg['lsp'] -is [System.Collections.IDictionary])) {
         throw '现有配置中的 lsp 字段不是对象,请先手动修复'
     }
-    $cfg['lsp']['jdtls'] = [ordered]@{
+    $jdtlsCfg = [ordered]@{
         command = @($JdtlsPath, "--jvm-arg=-javaagent:$LombokJar")
-        extensions = @('.java')
     }
+    if ($JavaHome) {
+        $jdtlsCfg['env'] = [ordered]@{ JAVA_HOME = $JavaHome }
+    }
+    $jdtlsCfg['extensions'] = @('.java')
+    $cfg['lsp']['jdtls'] = $jdtlsCfg
     Write-ConfigObject -Path $Path -Config $cfg
 }
 
@@ -248,7 +313,7 @@ function Remove-JdtlsConfig([string]$Path) {
     Write-ConfigObject -Path $Path -Config $cfg
 }
 
-function Show-InstallPreview([string]$JdtlsPath, [string]$LombokJar) {
+function Show-InstallPreview([string]$JdtlsPath, [string]$LombokJar, [string]$JavaHome) {
     Write-Info "即将合并写入以下内容到 $ConfigFile:"
     Write-Host ''
     Write-Host '  "lsp": {'
@@ -257,6 +322,11 @@ function Show-InstallPreview([string]$JdtlsPath, [string]$LombokJar) {
     Write-Host ("        \"{0}\"," -f $JdtlsPath)
     Write-Host ("        \"--jvm-arg=-javaagent:{0}\"" -f $LombokJar)
     Write-Host '      ],'
+    if ($JavaHome) {
+        Write-Host '      "env": {'
+        Write-Host ("        \"JAVA_HOME\": \"{0}\"" -f $JavaHome)
+        Write-Host '      },'
+    }
     Write-Host '      "extensions": [".java"]'
     Write-Host '    }'
     Write-Host '  }'
@@ -320,7 +390,7 @@ function Invoke-Uninstall {
 
 function Invoke-Install {
     $script:CurrentStep = 0
-    $script:TotalSteps = 5
+    $script:TotalSteps = 6
 
     Show-Banner '🚀 opencode jdtls Lombok 集成器'
     Write-Host ''
@@ -328,8 +398,9 @@ function Invoke-Install {
     Write-Host '    1. 检测当前操作系统'
     Write-Host '    2. 定位 opencode 内置的 jdtls 可执行文件'
     Write-Host '    3. 从本地 Maven 仓库或 Maven Central 获取 Lombok jar'
-    Write-Host '    4. 预览即将写入 ~/.config/opencode/opencode.json 的配置'
-    Write-Host '    5. 备份原配置并合并写入'
+    Write-Host '    4. 检测 JDK 21+(jdtls 运行所需)'
+    Write-Host '    5. 预览即将写入 ~/.config/opencode/opencode.json 的配置'
+    Write-Host '    6. 备份原配置并合并写入'
     Write-Host ''
     Write-Host '  你需要做的:'
     Write-Host '    - 在脚本提示 "确认应用?" 时输入 y 回车 (跳过用 -Yes)'
@@ -348,6 +419,25 @@ function Invoke-Install {
     $lombokJar = Resolve-LombokJar
     Write-Success "Lombok jar: $lombokJar"
 
+    Step-Title '检测 JDK 21+'
+    $javaHome = Find-Java21
+    if ($javaHome) {
+        Write-Success "找到 JDK 21+: $javaHome"
+    } else {
+        Write-Warn '未找到 JDK 21+ 安装'
+        Write-Host ''
+        Write-Info 'jdtls 需要 Java 21+ 才能稳定运行,推荐安装方式:'
+        Write-Hint 'Adoptium:  https://adoptium.net/temurin/releases/'
+        Write-Hint 'winget:    winget install EclipseAdoptium.Temurin.21.JDK'
+        Write-Hint 'SDKMAN:    sdk install java 21-open'
+        Write-Host ''
+        if (-not (Confirm-Action '未检测到 JDK 21+,是否跳过 JAVA_HOME 配置继续安装?')) {
+            Write-Info '已取消,请先安装 JDK 21+ 后重新执行'
+            return
+        }
+        Write-Warn '将跳过 env.JAVA_HOME 配置,jdtls 可能无法正常工作'
+    }
+
     Step-Title '准备 opencode 配置文件'
     if (Test-Path $ConfigFile) {
         $null = Read-ConfigObject -Path $ConfigFile
@@ -363,7 +453,7 @@ function Invoke-Install {
     }
 
     Step-Title '预览并写入配置'
-    Show-InstallPreview -JdtlsPath $jdtlsPath -LombokJar $lombokJar
+    Show-InstallPreview -JdtlsPath $jdtlsPath -LombokJar $lombokJar -JavaHome $javaHome
     if (-not (Confirm-Action '确认应用?')) {
         Write-Info '已取消,未做任何修改'
         return
@@ -371,7 +461,7 @@ function Invoke-Install {
 
     Backup-File -Path $ConfigFile
     Write-Action '正在合并 JSON 配置...'
-    Merge-JdtlsConfig -Path $ConfigFile -JdtlsPath $jdtlsPath -LombokJar $lombokJar
+    Merge-JdtlsConfig -Path $ConfigFile -JdtlsPath $jdtlsPath -LombokJar $lombokJar -JavaHome $javaHome
     Write-Success '配置已写入'
 
     Show-Banner '🎉 安装完成!'

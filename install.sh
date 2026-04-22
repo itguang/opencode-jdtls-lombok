@@ -236,50 +236,140 @@ resolve_lombok_jar() {
     fi
 }
 
+# ---------- 检测 JDK 21+ ----------
+# 从 java -version 输出中提取主版本号
+get_java_major_version() {
+    local java_bin="$1"
+    local ver_output
+    ver_output="$("$java_bin" -version 2>&1 || true)"
+    # 匹配 "version \"21.0.1\"" 或 "version \"1.8.0_xxx\""
+    local ver
+    ver="$(echo "$ver_output" | head -1 | sed -n 's/.*version "\([^"]*\)".*/\1/p')"
+    [[ -n "$ver" ]] || return 1
+    # 取第一段数字作为主版本号
+    local major="${ver%%.*}"
+    # 旧版格式 1.x → 实际主版本是第二段
+    if [[ "$major" == "1" ]]; then
+        major="$(echo "$ver" | cut -d. -f2)"
+    fi
+    echo "$major"
+}
+
+# 查找 JDK 21+ 安装路径,返回 JAVA_HOME
+find_java21() {
+    local os="$1"
+    local best_path="" best_ver=0
+
+    # 内部函数: 检查一个候选路径
+    _check_candidate() {
+        local home="$1"
+        local java_bin="$home/bin/java"
+        [[ -x "$java_bin" ]] || return 1
+        local ver
+        ver="$(get_java_major_version "$java_bin")" || return 1
+        if [[ "$ver" -ge 21 ]] && [[ "$ver" -gt "$best_ver" ]]; then
+            best_ver="$ver"
+            best_path="$home"
+        fi
+    }
+
+    # 1) 检查当前 JAVA_HOME
+    if [[ -n "${JAVA_HOME:-}" ]]; then
+        hint "检查 JAVA_HOME=$JAVA_HOME" >&2
+        _check_candidate "$JAVA_HOME" 2>/dev/null
+    fi
+
+    # 2) macOS: /usr/libexec/java_home -v 21+
+    if [[ "$os" == "macos" ]] && [[ -x /usr/libexec/java_home ]]; then
+        local mac_home
+        mac_home="$(/usr/libexec/java_home -v 21+ 2>/dev/null || true)"
+        if [[ -n "$mac_home" ]]; then
+            hint "检查 java_home -v 21+: $mac_home" >&2
+            _check_candidate "$mac_home" 2>/dev/null
+        fi
+    fi
+
+    # 3) 扫描常见安装目录
+    local search_dirs=()
+    case "$os" in
+        macos)
+            search_dirs=(
+                "$HOME/Library/Java/JavaVirtualMachines"/*/Contents/Home
+                /Library/Java/JavaVirtualMachines/*/Contents/Home
+            ) ;;
+        linux|wsl)
+            search_dirs=(
+                /usr/lib/jvm/*
+            ) ;;
+    esac
+    # 通用目录: SDKMAN / IntelliJ 下载
+    search_dirs+=(
+        "$HOME/.sdkman/candidates/java"/*/
+        "$HOME/.jdks"/*/
+    )
+
+    for candidate in "${search_dirs[@]}"; do
+        # glob 未展开时跳过
+        [[ -d "$candidate" ]] || continue
+        hint "检查: $candidate" >&2
+        _check_candidate "$candidate" 2>/dev/null
+    done
+
+    if [[ -n "$best_path" ]]; then
+        echo "$best_path"
+        return 0
+    fi
+    return 1
+}
+
 # ---------- JSON 合并 ----------
 # 优先 jq,回退 python3
 merge_config() {
     local config_file="$1"
     local jdtls_path="$2"
     local lombok_jar="$3"
+    local java_home="${4:-}"
 
     if command -v jq >/dev/null 2>&1; then
-        merge_with_jq "$config_file" "$jdtls_path" "$lombok_jar"
+        merge_with_jq "$config_file" "$jdtls_path" "$lombok_jar" "$java_home"
     elif command -v python3 >/dev/null 2>&1; then
-        merge_with_python "$config_file" "$jdtls_path" "$lombok_jar"
+        merge_with_python "$config_file" "$jdtls_path" "$lombok_jar" "$java_home"
     else
         die "需要 jq 或 python3 来合并 JSON 配置 (brew install jq)"
     fi
 }
 
 merge_with_jq() {
-    local config_file="$1" jdtls_path="$2" lombok_jar="$3"
+    local config_file="$1" jdtls_path="$2" lombok_jar="$3" java_home="${4:-}"
     local tmp; tmp="$(mktemp)"
     jq \
         --arg jdtls "$jdtls_path" \
         --arg agent "-javaagent:$lombok_jar" \
+        --arg java_home "$java_home" \
         '. + {
             "$schema": "https://opencode.ai/config.json",
             lsp: ((.lsp // {}) + {
                 jdtls: ((.lsp.jdtls // {}) + {
                     command: [$jdtls, ("--jvm-arg=" + $agent)],
                     extensions: ((.lsp.jdtls.extensions // [".java"]))
-                })
+                } + (if $java_home != "" then {env: {JAVA_HOME: $java_home}} else {} end))
             })
         }' "$config_file" > "$tmp"
     mv "$tmp" "$config_file"
 }
 
 merge_with_python() {
-    local config_file="$1" jdtls_path="$2" lombok_jar="$3"
+    local config_file="$1" jdtls_path="$2" lombok_jar="$3" java_home="${4:-}"
     OPENCODE_JDTLS_PATH="$jdtls_path" \
     OPENCODE_LOMBOK_JAR="$lombok_jar" \
+    OPENCODE_JAVA_HOME="$java_home" \
     OPENCODE_CONFIG="$config_file" \
     python3 - <<'PY'
 import json, os, sys
 cfg_path = os.environ["OPENCODE_CONFIG"]
 jdtls   = os.environ["OPENCODE_JDTLS_PATH"]
 lombok  = os.environ["OPENCODE_LOMBOK_JAR"]
+java_home = os.environ.get("OPENCODE_JAVA_HOME", "")
 with open(cfg_path) as f:
     cfg = json.load(f)
 cfg.setdefault("$schema", "https://opencode.ai/config.json")
@@ -287,6 +377,8 @@ lsp = cfg.setdefault("lsp", {})
 jdtls_cfg = lsp.setdefault("jdtls", {})
 jdtls_cfg["command"] = [jdtls, f"--jvm-arg=-javaagent:{lombok}"]
 jdtls_cfg.setdefault("extensions", [".java"])
+if java_home:
+    jdtls_cfg["env"] = {"JAVA_HOME": java_home}
 with open(cfg_path, "w") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
@@ -396,7 +488,7 @@ EOF
     fi
 
     # ===== 安装流程 =====
-    TOTAL_STEPS=5
+    TOTAL_STEPS=6
     banner "🚀 opencode jdtls Lombok 集成器"
     if $PIPED_EXEC; then
         echo
@@ -412,8 +504,9 @@ EOF
     1. 检测当前操作系统
     2. 定位 opencode 内置的 jdtls 可执行文件
     3. 从本地 Maven 仓库或 Maven Central 获取 Lombok jar
-    4. 预览即将写入 ~/.config/opencode/opencode.json 的配置
-    5. 备份原配置并合并写入
+    4. 检测 JDK 21+(jdtls 运行所需)
+    5. 预览即将写入 ~/.config/opencode/opencode.json 的配置
+    6. 备份原配置并合并写入
 
   你需要做的:
     - 在脚本提示 "确认应用?" 时输入 y 回车 (跳过用 --yes)
@@ -436,6 +529,28 @@ EOF
     step "解析 Lombok jar"
     local lombok_jar; lombok_jar="$(resolve_lombok_jar)"
     success "Lombok jar: $lombok_jar"
+
+    step "检测 JDK 21+"
+    local java_home=""
+    action "🔍 正在搜索 JDK 21+ 安装(jdtls 需要 Java 21+ 才能稳定运行)..."
+    if java_home="$(find_java21 "$os")"; then
+        success "找到 JDK 21+: $java_home"
+    else
+        java_home=""
+        warn "未找到 JDK 21+ 安装"
+        echo
+        info "jdtls 需要 Java 21+ 才能稳定运行,推荐安装方式:"
+        hint "macOS:   brew install openjdk@21"
+        hint "Linux:   sudo apt install openjdk-21-jdk  或  sudo yum install java-21-openjdk"
+        hint "SDKMAN:  sdk install java 21-open"
+        hint "手动:    https://adoptium.net/temurin/releases/"
+        echo
+        if ! confirm "未检测到 JDK 21+,是否跳过 JAVA_HOME 配置继续安装?"; then
+            info "已取消,请先安装 JDK 21+ 后重新执行"
+            exit 0
+        fi
+        warn "将跳过 env.JAVA_HOME 配置,jdtls 可能无法正常工作"
+    fi
 
     # opencode 配置目录
     local config_dir="$HOME/.config/opencode"
@@ -465,7 +580,23 @@ EOF
     step "预览并写入配置"
     info "即将合并写入以下内容到 $config_file:"
     echo
-    cat <<EOF
+    if [[ -n "$java_home" ]]; then
+        cat <<EOF
+  "lsp": {
+    "jdtls": {
+      "command": [
+        "$jdtls_path",
+        "--jvm-arg=-javaagent:$lombok_jar"
+      ],
+      "env": {
+        "JAVA_HOME": "$java_home"
+      },
+      "extensions": [".java"]
+    }
+  }
+EOF
+    else
+        cat <<EOF
   "lsp": {
     "jdtls": {
       "command": [
@@ -476,6 +607,7 @@ EOF
     }
   }
 EOF
+    fi
     echo
     hint "说明: 这只会修改 lsp.jdtls 段,你已有的其他 opencode 配置都会保留"
     hint "原 opencode.json 会备份为 opencode.json.bak.<时间戳>"
@@ -483,7 +615,7 @@ EOF
 
     backup_file "$config_file"
     action "正在合并 JSON 配置..."
-    merge_config "$config_file" "$jdtls_path" "$lombok_jar"
+    merge_config "$config_file" "$jdtls_path" "$lombok_jar" "$java_home"
     success "配置已写入"
 
     banner "🎉 安装完成!"
